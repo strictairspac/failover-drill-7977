@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>shardlab · 在线分片拆分沙盘</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>shardlab <span>在线分片拆分沙盘</span></h1>
+    <p class="tagline">源分片搬迁中照常接单 · epoch fencing 单属主写 · 一次性切换 · 跨分片不漏不重扫描</p>
+  </div>
+  <div class="poll">
+    <label><input type="checkbox" id="autoPoll" checked> 每 2 秒自动刷新</label>
+    <button id="refreshBtn" class="ghost">立即刷新</button>
+  </div>
+</header>
+
+<main>
+<section class="grid">
+  <!-- 路由与分片 -->
+  <article class="card span2">
+    <h2>① 路由表与分片分布</h2>
+    <div id="routerBox"></div>
+    <div id="shardBox" class="shards"></div>
+  </article>
+
+  <!-- 写单 -->
+  <article class="card">
+    <h2>② 写单（建单 / 改价 / 删单）</h2>
+    <div class="form">
+      <label>订单号 <input id="wOrderId" type="number" value="500" min="-999999999999999999"></label>
+      <label>操作
+        <select id="wOp">
+          <option value="create">建单 create</option>
+          <option value="price">改价 price</option>
+          <option value="delete">删单 delete</option>
+        </select>
+      </label>
+      <label>价格 <input id="wPrice" type="number" value="888"></label>
+      <label class="inline"><input id="wRetry" type="checkbox" checked> fencing 后自动重定向重试</label>
+      <button id="writeBtn">提交写入</button>
+    </div>
+    <p class="hint">与「切换」并发时，旧属主上的在途写入会被 epoch fencing 拦截；勾选自动重试后在新属主成功，已确认改动不丢。</p>
+  </article>
+
+  <!-- 拆分控制 -->
+  <article class="card span2">
+    <h2>③ 拆分推进（回填 → 追日志 → 一次性切换）</h2>
+    <div class="form horizontal">
+      <label>区间下界（含） <input id="mLo" type="number" value="1"></label>
+      <label>区间上界（不含） <input id="mHi" type="number" value="61"></label>
+      <label>新分片 <input id="mDst" value="shard-b"></label>
+      <button id="startBtn">发起拆分</button>
+      <button id="backfillBtn" disabled>推一批回填</button>
+      <button id="catchupBtn" disabled>推一批增量</button>
+      <button id="cutoverBtn" class="primary" disabled>追齐后一次性切换</button>
+    </div>
+    <div id="migrationBox"></div>
+  </article>
+
+  <!-- 迟到副本 -->
+  <article class="card">
+    <h2>④ 迟到旧副本注入</h2>
+    <div class="form">
+      <label>订单号 <input id="lOrderId" type="number" value="23"></label>
+      <label>携带版本 <input id="lVersion" type="number" value="1"></label>
+      <label>携带任期 <input id="lEpoch" type="number" value="1"></label>
+      <label>内容
+        <select id="lStatus">
+          <option value="active">active（试图让删单复活）</option>
+          <option value="tombstone">tombstone</option>
+        </select>
+      </label>
+      <label>价格 <input id="lPrice" type="number" value="100"></label>
+      <button id="lateBtn">注入迟到副本</button>
+    </div>
+    <p class="hint">版本更低 → 丢弃；切换后携带旧 epoch → 任期 fence；墓碑不会被旧的存活副本覆盖。</p>
+  </article>
+
+  <!-- 扫描 -->
+  <article class="card span2">
+    <h2>⑤ 跨分片扫单（每分片游标续扫，主键去重）</h2>
+    <div class="form horizontal">
+      <button id="scanStartBtn">启动扫描</button>
+      <button id="scanBatchBtn" disabled>推一批扫描</button>
+      <button id="scanResultBtn" class="ghost">查看结果明细</button>
+    </div>
+    <div id="scanBox"></div>
+    <div id="scanResultBox" class="table-wrap hidden"></div>
+  </article>
+
+  <!-- 故障注入 -->
+  <article class="card">
+    <h2>⑥ 演练控制台（故障注入）</h2>
+    <div class="form">
+      <label>离线分片（逗号分隔） <input id="offlineInput" placeholder="如 shard-a 或 shard-b"></label>
+      <button id="offlineBtn">应用离线设置</button>
+      <label class="inline"><input id="failMig" type="checkbox"> 下一批搬运中断（可恢复）</label>
+      <label class="inline"><input id="failScan" type="checkbox"> 下一批扫描中断（可恢复）</label>
+      <label>写入延迟窗口（毫秒，制造并发切换）
+        <input id="delayInput" type="number" value="0" min="0" step="100">
+      </label>
+      <button id="delayBtn">应用延迟</button>
+      <div class="danger-zone">
+        <button id="reseedBtn" class="warn">重新播种（保留库，清数据）</button>
+        <button id="resetBtn" class="danger">重置沙盘（删库重建）</button>
+      </div>
+      <p class="hint">重启进程不影响进度：所有路由、游标、迁移与扫描状态都在 SQLite 落盘。</p>
+    </div>
+  </article>
+
+  <!-- 事件流 -->
+  <article class="card span3">
+    <h2>⑦ 事件流（fencing / 切换 / 中断 / 丢弃全部留痕）</h2>
+    <div id="eventsBox" class="events"></div>
+  </article>
+</section>
+</main>
+
+<footer>
+  <span id="healthDot" class="dot"></span>
+  <span id="healthText">连接中…</span>
+  <span class="spacer"></span>
+  <span>shardlab · 纯标准库实现（SQLite + http.server），数据目录 shardlab/data/</span>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>
